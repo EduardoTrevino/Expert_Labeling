@@ -30,6 +30,7 @@ yarn-error.log*
 # vercel
 .vercel
 .bolt
+pass.txt
 
 # typescript
 *.tsbuildinfo
