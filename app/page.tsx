@@ -5,15 +5,20 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { useUserStore } from "@/lib/store";
 
 export default function Home() {
   const [firstName, setFirstName] = useState("");
   const router = useRouter();
+  const { setName } = useUserStore();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (firstName.trim()) {
-      router.push(`/dashboard?name=${encodeURIComponent(firstName)}`);
+      // 1. Store name in the global store
+      setName(firstName.trim());
+      // 2. Then navigate
+      router.push("/dashboard");
     }
   };
 
