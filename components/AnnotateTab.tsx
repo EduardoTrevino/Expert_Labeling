@@ -1,289 +1,435 @@
 "use client";
 
-import { useEffect, useState, useRef, MouseEvent } from "react";
+import React, { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
+import { supabase } from "@/lib/supabase";
 import { Card } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { supabase } from "@/lib/supabase";
-import { ImageIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
-const ANNOTATION_OPTIONS = [
-  "Lightening Arrestor",
-  "Capacitive Voltage Transformer (CVT)",
-  "Line Wave Traps (Low Pass Filter)",
-  "High Side Disconnect/Isolator",
-  "Current Transformer",
-  "Circuit Breaker",
-  "Connecting Conductors",
-  "Upstream Towers/Structures",
-  "Power Transformers",
-  "Clearances"
+// Dynamically import the map
+const MapLeaflet = dynamic(() => import("@/components/MapLeaflet"), { ssr: false });
+
+const SUBSTATION_TYPES = [
+  "Transmission",
+  "Distribution",
+  "Industrial owned",
+  "Customer Owned",
+  "Sub-transmission station",
+  "Switching station",
+  "Gas Insulated Substation",
+  "Other",
 ];
 
-interface Annotation {
-  id: string;
-  x: number;
-  y: number;
-  type: string;
-  otherText?: string;
-  selected: string[];
-}
+const COMPONENT_OPTIONS = [
+  "Power transformer",
+  "Circuit switch",
+  "Circuit breaker",
+  "High side power area",
+  "Capacitor bank",
+  "Battery bank",
+  "Bus bar",
+  "Control house",
+  "Spare equipment",
+  "Vehicles",
+  "Tripolar disconnect switch",
+  "Recloser",
+  "Fuse disconnect switch",
+  "Closed blade disconnect switch",
+  "Current transformer",
+  "Open blade disconnect switch",
+  "Closed tandem disconnect switch",
+  "Open tandem disconnect switch",
+  "Lightning arrester",
+  "Glass disc insulator",
+  "Potential transformer",
+  "Muffle",
+];
 
 interface ImageData {
   id: string;
-  url: string;
+  url: string; 
+  name?: string;
   uploaded_by: string;
   created_at: string;
   completed?: boolean;
+  substation_type?: string;
+}
+
+interface PolygonData {
+  id: string;
+  image_id: string;
+  label: string;
+  confirmed?: boolean;
+  geometry: {
+    type: string;
+    coordinates: any[][];
+  };
 }
 
 export default function AnnotateTab() {
-  // State for images that still need annotation
   const [images, setImages] = useState<ImageData[]>([]);
-  // Currently selected image for annotation
   const [selectedImage, setSelectedImage] = useState<ImageData | null>(null);
 
-  // Local annotation state for the selected image
-  const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [activeAnnotation, setActiveAnnotation] = useState<Annotation | null>(null);
-  const [showAnnotationForm, setShowAnnotationForm] = useState(false);
-  const [formPosition, setFormPosition] = useState({ x: 0, y: 0 });
-  const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
+  const [polygons, setPolygons] = useState<PolygonData[]>([]);
+  const [substationType, setSubstationType] = useState("");
+  const [substationTypeOther, setSubstationTypeOther] = useState("");
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogPolygon, setDialogPolygon] = useState<PolygonData | null>(null);
+  const [selectedComponents, setSelectedComponents] = useState<string[]>([]);
   const [otherText, setOtherText] = useState("");
 
-  const imageRef = useRef<HTMLDivElement>(null);
+  const [incompleteLabels, setIncompleteLabels] = useState<string[]>(COMPONENT_OPTIONS);
+  const [completeLabels, setCompleteLabels] = useState<string[]>([]);
 
-  // Fetch images that are not yet completed
+  // Filter out substation polygon if you prefer
+  const actualPolygons = polygons.filter((p) => p.label !== "power_substation_polygon");
+
   useEffect(() => {
-    const fetchImages = async () => {
-      const { data, error } = await supabase
-        .from('images')
-        .select('*')
-        .eq('completed', false)
-        .order('created_at', { ascending: false });
-      if (error) {
-        console.error("Error fetching images:", error);
-      } else {
-        setImages(data || []);
-        if (data && data.length > 0 && !selectedImage) {
-          setSelectedImage(data[0]);
-        }
-      }
-    };
+    fetchUncompletedImages();
+  }, []);
 
-    fetchImages();
+  async function fetchUncompletedImages() {
+    const { data } = await supabase
+      .from("images")
+      .select("*")
+      .eq("completed", false)
+      .order("created_at", { ascending: false });
+    setImages(data || []);
+    if (data && data.length > 0) {
+      setSelectedImage(data[0]);
+    }
+  }
+
+  useEffect(() => {
+    if (!selectedImage) return;
+    fetchPolygonsForImage(selectedImage.id);
+    setSubstationType(selectedImage.substation_type || "");
+    setSubstationTypeOther("");
   }, [selectedImage]);
 
-  // Number of images left to annotate
-  const imagesLeftCount = images.length;
+  async function fetchPolygonsForImage(imgId: string) {
+    const { data } = await supabase
+      .from("component_polygons")
+      .select("*")
+      .eq("image_id", imgId);
+    setPolygons(data || []);
+  }
 
-  // When a sidebar thumbnail is clicked, select that image
-  const handleSelectImage = (img: ImageData) => {
+  function handleSelectImage(img: ImageData) {
     setSelectedImage(img);
-    setAnnotations([]); // reset annotations for a new image
-  };
+    setPolygons([]);
+  }
 
-  // Handle click on main image: add a new annotation if not clicking on an existing dot.
-  const handleMainImageClick = (e: MouseEvent<HTMLDivElement>) => {
-    // If the click comes from a dot, do nothing.
-    if ((e.target as HTMLElement).dataset.dot === "true") return;
-    if (!imageRef.current) return;
-    const rect = imageRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    const newAnnotation: Annotation = {
-      id: Date.now().toString(),
-      x,
-      y,
-      type: "default",
-      selected: [],
-    };
-    setAnnotations((prev) => [...prev, newAnnotation]);
-    setActiveAnnotation(newAnnotation);
-    setShowAnnotationForm(true);
-    setFormPosition({ x: e.clientX, y: e.clientY });
-  };
-
-  // When clicking on an existing annotation dot, open it for editing.
-  const handleEditAnnotation = (e: MouseEvent<HTMLDivElement>, annotation: Annotation) => {
-    e.stopPropagation();
-    setActiveAnnotation(annotation);
-    setSelectedOptions(annotation.selected);
-    setOtherText(annotation.otherText || "");
-    setShowAnnotationForm(true);
-    setFormPosition({ x: e.clientX, y: e.clientY });
-  };
-
-  const handleCheckboxChange = (option: string) => {
-    setSelectedOptions(prev =>
-      prev.includes(option)
-        ? prev.filter(item => item !== option)
-        : [...prev, option]
-    );
-  };
-
-  const handleSaveAnnotation = () => {
-    if (activeAnnotation) {
-      const updatedAnnotations = annotations.map(ann =>
-        ann.id === activeAnnotation.id
-          ? { ...ann, selected: selectedOptions, otherText }
-          : ann
-      );
-      setAnnotations(updatedAnnotations);
-      setShowAnnotationForm(false);
-      setSelectedOptions([]);
-      setOtherText("");
-      setActiveAnnotation(null);
+  function handleSubstationTypeChange(val: string) {
+    setSubstationType(val);
+    if (val === "Other") {
+      setSubstationTypeOther("");
+    } else {
+      updateSubstationType(val);
     }
-  };
-
-  const handleDeleteAnnotation = () => {
-    if (activeAnnotation) {
-      setAnnotations((prev) => prev.filter(ann => ann.id !== activeAnnotation.id));
-      setShowAnnotationForm(false);
-      setSelectedOptions([]);
-      setOtherText("");
-      setActiveAnnotation(null);
-    }
-  };
-
-  // When the user is finished annotating the current image, submit the annotations.
-  const handleSubmitAnnotations = async () => {
+  }
+  async function updateSubstationType(finalVal: string) {
     if (!selectedImage) return;
-    // Insert each annotation into the "annotations" table.
-    for (const ann of annotations) {
-      const { error } = await supabase
-        .from('annotations')
+    await supabase
+      .from("images")
+      .update({ substation_type: finalVal })
+      .eq("id", selectedImage.id);
+  }
+  function handleSubstationOtherBlur() {
+    if (!selectedImage) return;
+    if (substationType === "Other" && substationTypeOther.trim()) {
+      updateSubstationType(substationTypeOther.trim());
+    }
+  }
+
+  // Called when user finishes drawing polygon
+  function handlePolygonCreated(geojson: any) {
+    if (!selectedImage) return;
+    const newPoly: PolygonData = {
+      id: `temp-${Date.now()}`,
+      image_id: selectedImage.id,
+      label: "",
+      confirmed: false,
+      geometry: geojson.geometry,
+    };
+    setDialogPolygon(newPoly);
+    setSelectedComponents([]);
+    setOtherText("");
+    setDialogOpen(true);
+  }
+
+  function handlePolygonClicked(poly: PolygonData) {
+    if (poly.label === "power_substation_polygon") return;
+    setDialogPolygon(poly);
+    if (COMPONENT_OPTIONS.includes(poly.label)) {
+      setSelectedComponents([poly.label]);
+      setOtherText("");
+    } else {
+      setSelectedComponents([]);
+      setOtherText(poly.label || "");
+    }
+    setDialogOpen(true);
+  }
+
+  function toggleComponent(c: string) {
+    setSelectedComponents((prev) =>
+      prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
+    );
+  }
+
+  async function handleSavePolygon() {
+    if (!dialogPolygon) return;
+    let finalLabel = "";
+    if (selectedComponents.length > 0) {
+      finalLabel = selectedComponents[0];
+    } else if (otherText.trim()) {
+      finalLabel = otherText.trim();
+    }
+    const isTemp = dialogPolygon.id.startsWith("temp-");
+
+    if (isTemp) {
+      // Insert new
+      const { data } = await supabase
+        .from("component_polygons")
         .insert([
           {
-            image_id: selectedImage.id,
-            x_coordinate: ann.x,
-            y_coordinate: ann.y,
-            annotation_type: ann.selected,
-            other_text: ann.otherText,
-            created_by: selectedImage.uploaded_by, // or your current user
-          }
-        ]);
-      if (error) {
-        console.error("Error saving annotation:", error);
+            image_id: dialogPolygon.image_id,
+            label: finalLabel,
+            geometry: dialogPolygon.geometry,
+            confirmed: false,
+          },
+        ])
+        .select("*");
+      if (data && data.length > 0) {
+        setPolygons((prev) => [...prev, data[0]]);
+      }
+    } else {
+      // Update existing
+      const { data } = await supabase
+        .from("component_polygons")
+        .update({ label: finalLabel, confirmed: false })
+        .eq("id", dialogPolygon.id)
+        .select("*");
+      if (data && data.length > 0) {
+        setPolygons((prev) =>
+          prev.map((p) =>
+            p.id === dialogPolygon.id ? { ...p, label: finalLabel, confirmed: false } : p
+          )
+        );
       }
     }
-    // Mark the image as complete.
-    const { error: updateError } = await supabase
-      .from('images')
-      .update({ completed: true })
-      .eq('id', selectedImage.id);
-    if (updateError) {
-      console.error("Error updating image:", updateError);
-    } else {
-      // Remove the submitted image from the sidebar.
-      setImages(prev => prev.filter(img => img.id !== selectedImage.id));
-      setSelectedImage(null);
-      setAnnotations([]);
-      alert("Annotations submitted successfully!");
+
+    setDialogPolygon(null);
+    setDialogOpen(false);
+  }
+
+  async function handleDeletePolygon() {
+    if (!dialogPolygon) return;
+    if (dialogPolygon.id.startsWith("temp-")) {
+      setDialogPolygon(null);
+      setDialogOpen(false);
+      return;
     }
-  };
+    await supabase
+      .from("component_polygons")
+      .delete()
+      .eq("id", dialogPolygon.id);
+    setPolygons((prev) => prev.filter((p) => p.id !== dialogPolygon.id));
+    setDialogPolygon(null);
+    setDialogOpen(false);
+  }
+
+  // Mark entire image as complete
+  async function handleCompleteImage() {
+    if (!selectedImage) return;
+    if (!substationType || (substationType === "Other" && !substationTypeOther.trim())) {
+      alert("Please select/enter substation type.");
+      return;
+    }
+    if (substationType === "Other" && substationTypeOther.trim()) {
+      await updateSubstationType(substationTypeOther.trim());
+    }
+    await supabase
+      .from("images")
+      .update({ completed: true })
+      .eq("id", selectedImage.id);
+    setImages((prev) => prev.filter((im) => im.id !== selectedImage.id));
+    setSelectedImage(null);
+    setPolygons([]);
+    alert("Image completed!");
+  }
+
+  // Distinguish incomplete vs. complete from "confirmed" polygons
+  useEffect(() => {
+    const usedLabels = actualPolygons
+      .filter((p) => p.confirmed && COMPONENT_OPTIONS.includes(p.label))
+      .map((p) => p.label);
+    const uniqueUsed = Array.from(new Set(usedLabels));
+    const complete = COMPONENT_OPTIONS.filter((opt) => uniqueUsed.includes(opt));
+    const incomplete = COMPONENT_OPTIONS.filter((opt) => !uniqueUsed.includes(opt));
+    setCompleteLabels(complete);
+    setIncompleteLabels(incomplete);
+  }, [actualPolygons]);
 
   return (
     <div className="flex gap-4 mt-6">
-      {/* Sidebar with thumbnails */}
+      {/* Sidebar */}
       <div className="w-64 flex flex-col">
-        <div className="mb-4 font-semibold text-navy-900">
-          {imagesLeftCount} images left to annotate
+        <div className="mb-4 font-semibold text-gray-800">
+          {images.length} images left to annotate
         </div>
         <ScrollArea className="h-[600px]">
           <div className="flex flex-col space-y-2">
-            {images.map(img => (
+            {images.map((img) => (
               <div
                 key={img.id}
-                className={`flex items-center p-2 rounded hover:bg-navy-50 cursor-pointer ${selectedImage?.id === img.id ? "bg-navy-100" : ""}`}
+                className={`p-2 rounded hover:bg-gray-100 cursor-pointer ${
+                  selectedImage?.id === img.id ? "bg-gray-200" : ""
+                }`}
                 onClick={() => handleSelectImage(img)}
               >
-                <img src={img.url} alt="Thumbnail" className="w-16 h-16 object-cover rounded" />
-                <div className="ml-2 text-sm text-navy-700">
-                  {img.uploaded_by}
-                </div>
+                <div className="text-sm font-medium">{img.name || "Unnamed"}</div>
+                <div className="text-xs text-gray-600">By: {img.uploaded_by}</div>
               </div>
             ))}
           </div>
         </ScrollArea>
       </div>
 
-      {/* Main annotation area */}
-      <div className="flex-1">
+      {/* Main content */}
+      <div className="flex-1 flex flex-col relative">
         {selectedImage ? (
-          <Card className="p-4 bg-white shadow-md relative">
-            <div
-              ref={imageRef}
-              className="w-full h-[600px] relative cursor-crosshair"
-              onClick={handleMainImageClick}
-            >
-              <img
-                src={selectedImage.url}
-                alt="Main"
-                className="w-full h-full object-contain"
-              />
-
-              {annotations.map((annotation) => (
-                <div
-                  key={annotation.id}
-                  data-dot="true"
-                  onClick={(e) => handleEditAnnotation(e, annotation)}
-                  className="absolute w-4 h-4 bg-navy-500 rounded-full -translate-x-2 -translate-y-2 cursor-pointer transition-colors hover:bg-red-500"
-                  style={{ left: `${annotation.x}%`, top: `${annotation.y}%` }}
-                />
-              ))}
-            </div>
-
-            {/* Submit button */}
-            <div className="mt-4 flex justify-end">
-              <Button onClick={handleSubmitAnnotations} className="bg-green-600 hover:bg-green-700 text-white">
-                Submit Annotations
-              </Button>
-            </div>
-
-            {showAnnotationForm && activeAnnotation && (
-              <Card
-                className="absolute bg-white p-4 rounded-lg shadow-lg w-80 z-10"
-                style={{ left: formPosition.x, top: formPosition.y }}
+          <Card className="p-4 bg-white shadow-md flex-1 flex flex-col">
+            {/* Substation Type row */}
+            <div className="mb-2 flex items-center gap-2">
+              <label className="font-bold">Substation Type:</label>
+              <select
+                className="border px-2 py-1 rounded"
+                value={substationType}
+                onChange={(e) => handleSubstationTypeChange(e.target.value)}
               >
-                <ScrollArea className="h-60 mb-2">
-                  {ANNOTATION_OPTIONS.map((option) => (
-                    <div key={option} className="flex items-center space-x-2 mb-2">
-                      <Checkbox
-                        id={option}
-                        checked={selectedOptions.includes(option)}
-                        onCheckedChange={() => handleCheckboxChange(option)}
-                      />
-                      <label htmlFor={option} className="text-sm text-navy-900">{option}</label>
-                    </div>
-                  ))}
-                </ScrollArea>
-                <Input
-                  placeholder="Other annotation..."
-                  className="mt-4"
-                  value={otherText}
-                  onChange={(e) => setOtherText(e.target.value)}
+                <option value="">(Select type)</option>
+                {SUBSTATION_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+              {substationType === "Other" && (
+                <input
+                  type="text"
+                  placeholder="Enter substation type"
+                  className="border rounded px-2 py-1"
+                  value={substationTypeOther}
+                  onChange={(e) => setSubstationTypeOther(e.target.value)}
+                  onBlur={handleSubstationOtherBlur}
                 />
-                <div className="mt-4 flex justify-between space-x-2">
-                  <Button onClick={handleSaveAnnotation} className="w-full bg-navy-600 hover:bg-navy-700 text-white">
-                    Save Annotation
-                  </Button>
-                  <Button onClick={handleDeleteAnnotation} className="w-full bg-red-600 hover:bg-red-700 text-white">
-                    Delete
-                  </Button>
+              )}
+            </div>
+
+            {/* Badge row */}
+            <div className="flex gap-6 mb-2">
+              <div>
+                <div className="text-sm font-semibold mb-1">Incomplete</div>
+                <div className="flex flex-wrap gap-2">
+                  {incompleteLabels.map((lbl) => (
+                    <Badge key={lbl} variant="destructive">
+                      {lbl}
+                    </Badge>
+                  ))}
                 </div>
-              </Card>
-            )}
+              </div>
+              <div>
+                <div className="text-sm font-semibold mb-1">Complete</div>
+                <div className="flex flex-wrap gap-2">
+                  {completeLabels.map((lbl) => (
+                    <Badge key={lbl} variant="secondary">
+                      {lbl}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Leaflet map => let user pan/zoom. No disablePanZoom */}
+            <div className="flex-1 relative border" style={{ minHeight: 400 }}>
+              <MapLeaflet
+                tifUrl={selectedImage.url}
+                polygons={actualPolygons}
+                disablePanZoom={false} // let user move around & zoom
+                onPolygonCreated={handlePolygonCreated}
+                onPolygonClicked={handlePolygonClicked}
+              />
+            </div>
+
+            {/* Complete image button bottom-right */}
+            <Button
+              onClick={handleCompleteImage}
+              className="bottom-4 right-4 bg-blue-300 text-black"
+            >
+              Complete Image
+            </Button>
           </Card>
         ) : (
-          <div className="p-8 text-center text-navy-600">
-            Select an image from the sidebar to begin annotation.
+          <div className="p-8 text-gray-600">
+            Select an image from the sidebar.
           </div>
         )}
       </div>
+
+      {/* Dialog for labeling polygons */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent
+          className="z-[9999] max-w-lg"
+          style={{ position: "absolute", cursor: "move" }}
+        >
+          <DialogHeader>
+            <DialogTitle>Annotate Component</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 h-64 overflow-auto">
+            {COMPONENT_OPTIONS.map((option) => {
+              const checked = selectedComponents.includes(option);
+              return (
+                <div key={option} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleComponent(option)}
+                  />
+                  <label>{option}</label>
+                </div>
+              );
+            })}
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700">
+                Other:
+              </label>
+              <input
+                type="text"
+                className="border rounded p-1 w-full"
+                value={otherText}
+                onChange={(e) => setOtherText(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="destructive" onClick={handleDeletePolygon}>
+              Delete
+            </Button>
+            <Button onClick={handleSavePolygon}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

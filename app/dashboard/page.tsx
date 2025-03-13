@@ -1,49 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import AnnotateTab from "@/components/AnnotateTab";
+import AnnotateTab from "@/components/AnnotateTab"; // THIS is the big logic from above
 import CompleteTab from "@/components/CompleteTab";
 import UploadTab from "@/components/UploadTab";
 import DownloadTab from "@/components/DownloadTab";
 import UserHeader from "@/components/UserHeader";
 
-// Extend the Window interface to include voiceflow
-declare global {
-  interface Window {
-    voiceflow?: {
-      chat: {
-        load: (config: {
-          verify: { projectID: string };
-          url: string;
-          versionID: string;
-          voice: { url: string };
-        }) => void;
-      };
-    };
-  }
-}
-
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("annotate");
-
-  useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://cdn.voiceflow.com/widget-next/bundle.mjs";
-    script.type = "text/javascript";
-    script.async = true;
-    script.onload = () => {
-      if (window.voiceflow?.chat) {
-        window.voiceflow.chat.load({
-          verify: { projectID: "67c698291971d22cda97e102" },
-          url: "https://general-runtime.voiceflow.com",
-          versionID: "production",
-          voice: { url: "https://runtime-api.voiceflow.com" },
-        });
-      }
-    };
-    document.body.appendChild(script);
-  }, []);
 
   return (
     <div className="min-h-screen bg-white p-6">
