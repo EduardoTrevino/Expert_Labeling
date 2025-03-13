@@ -24,12 +24,25 @@
 */
 
 -- Create images table
+-- images table
 CREATE TABLE IF NOT EXISTS images (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  url text NOT NULL,
+  url text NOT NULL,          -- path or public URL to the .tif
+  name text,                  -- optional, e.g. "Substation_41378006.tif"
   uploaded_by text NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  completed boolean DEFAULT false
+);
+
+
+CREATE TABLE IF NOT EXISTS component_polygons (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  image_id uuid REFERENCES images(id),
+  label text,               -- e.g. "power_line", "power_switch", etc.
+  geometry jsonb NOT NULL,  -- store geometry from the shapefile as GeoJSON
   created_at timestamptz DEFAULT now()
 );
+
 
 -- Create annotations table
 CREATE TABLE IF NOT EXISTS annotations (
@@ -43,37 +56,11 @@ CREATE TABLE IF NOT EXISTS annotations (
   created_at timestamptz DEFAULT now()
 );
 
--- Enable RLS
-ALTER TABLE images ENABLE ROW LEVEL SECURITY;
-ALTER TABLE annotations ENABLE ROW LEVEL SECURITY;
+-- Disable Row Level Security
+ALTER TABLE images DISABLE ROW LEVEL SECURITY;
+ALTER TABLE annotations DISABLE ROW LEVEL SECURITY;
 
--- Create policies
-CREATE POLICY "Anyone can view images"
-  ON images
-  FOR SELECT
-  TO authenticated
-  USING (true);
+-- Grant full privileges to everyone (public)
+GRANT ALL PRIVILEGES ON TABLE images TO PUBLIC;
+GRANT ALL PRIVILEGES ON TABLE annotations TO PUBLIC;
 
-CREATE POLICY "Users can insert their own images"
-  ON images
-  FOR INSERT
-  TO authenticated
-  WITH CHECK (auth.uid()::text = uploaded_by);
-
-CREATE POLICY "Anyone can view annotations"
-  ON annotations
-  FOR SELECT
-  TO authenticated
-  USING (true);
-
-CREATE POLICY "Users can insert their own annotations"
-  ON annotations
-  FOR INSERT
-  TO authenticated
-  WITH CHECK (auth.uid()::text = created_by);
-
-CREATE POLICY "Users can update their own annotations"
-  ON annotations
-  FOR UPDATE
-  TO authenticated
-  USING (auth.uid()::text = created_by);
