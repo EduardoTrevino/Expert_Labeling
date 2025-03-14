@@ -65,6 +65,7 @@ function GeoTiffOverlay({
 
         // Create a new pane for the TIFF so we can set a higher zIndex
         map.createPane("geotiffPane");
+        console.log("GeoTIFF projection is:", raster.projection);
         // map.getPane("geotiffPane")!.style.zIndex = "200"; 
         // polygons use default "overlayPane" which has zIndex 400 by default
         // OSM tile layer is typically zIndex 200
@@ -73,6 +74,7 @@ function GeoTiffOverlay({
           georaster: raster,
           opacity: 1,
           resolution: 8192,
+          pane: "geotiffPane"
         });
         layer.addTo(map);
 
@@ -121,16 +123,16 @@ export default function MapLeaflet({
   return (
     <div style={{ width: "100%", height: "100%" }}>
       <MapContainer style={{ width: "100%", height: "100%" }} maxZoom={24}>
-        {/* OSM behind the substation */}
+        {/* A "natural" satellite-like basemap from ESRI */}
         <TileLayer
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
           attribution=""
         />
 
-        {/* The TIF overlay in its own pane so it's "above" the tile layer but below polygons */}
+        {/* The TIF overlay in a custom pane */}
         <GeoTiffOverlay tifUrl={tifUrl} disablePanZoom={disablePanZoom} />
 
-        {/* Render existing polygons in the default overlayPane, which is above geotiffPane */}
+        {/* Existing polygons, clickable */}
         {polygons.map((poly) => {
           const latlngs = geoJsonToLatLngs(poly.geometry);
           const color = poly.confirmed ? "blue" : "yellow";
@@ -146,10 +148,10 @@ export default function MapLeaflet({
           );
         })}
 
-        {/* FeatureGroup with the drawing controls */}
+        {/* FeatureGroup with Leaflet Draw.  Put toolbar in top-right. */}
         <FeatureGroup>
           <EditControl
-            position="topleft"
+            position="topright"
             draw={{
               polygon: true,
               marker: false,
