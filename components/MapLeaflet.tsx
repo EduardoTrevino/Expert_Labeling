@@ -12,104 +12,69 @@ import { EditControl } from "react-leaflet-draw";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet-draw/dist/leaflet.draw.css";
-import georaster from "georaster"; 
-import GeoRasterLayer from "georaster-layer-for-leaflet";
 
-// The shape of your DB polygons
-export interface PolygonData {
+export interface ComponentPolygon {
   id: string;
-  image_id: string;
+  substation_id: string | null;
   label: string;
   confirmed?: boolean;
   geometry: {
     type: string;
-    coordinates: number[][][]; // single polygon ring
+    coordinates: number[][][];
   };
+  created_at: string;
 }
 
 interface MapLeafletProps {
-  tifUrl: string;               // The public URL to your .tif from Supabase
-  polygons: PolygonData[];      // Polygons from DB
-  disablePanZoom?: boolean;     // If you truly want to lock the map, set true
+  polygons: ComponentPolygon[]; // This includes the substation boundary as well
+  disablePanZoom?: boolean;
   onPolygonCreated?: (geojson: any) => void;
-  onPolygonClicked?: (poly: PolygonData) => void;
+  onPolygonClicked?: (poly: ComponentPolygon) => void;
 }
 
+/**
+ * Convert a GeoJSON polygon => array of [lat, lng].
+ */
 function geoJsonToLatLngs(geometry: any) {
-  if (geometry.type !== "Polygon") return [];
-  const coords = geometry.coordinates[0];
+  if (!geometry || geometry.type !== "Polygon") return [];
+  const coords = geometry.coordinates[0] || [];
+  // coords are [lng, lat], so flip to [lat, lng]
   return coords.map(([lng, lat]: [number, number]) => [lat, lng]);
 }
 
 /**
- * Sub-component that loads the GeoTIFF with georaster-layer-for-leaflet
- * and adds it to a custom Leaflet pane so we can control zIndex easily.
+ * Sub-component that auto-fits the map to the substation polygon if found.
  */
-function GeoTiffOverlay({
-  tifUrl,
-  disablePanZoom,
-}: {
-  tifUrl: string;
-  disablePanZoom?: boolean;
-}) {
+function FitBoundsToSubstation({ polygons }: { polygons: ComponentPolygon[] }) {
   const map = useMap();
 
   useEffect(() => {
-    let layer: GeoRasterLayer | null = null;
-
-    async function loadRaster() {
-      try {
-        const response = await fetch(tifUrl);
-        const arrayBuf = await response.arrayBuffer();
-        const raster = await georaster(arrayBuf);
-
-        // Create a new pane for the TIFF so we can set a higher zIndex
-        map.createPane("geotiffPane");
-        console.log("GeoTIFF projection is:", raster.projection);
-        // map.getPane("geotiffPane")!.style.zIndex = "200"; 
-        // polygons use default "overlayPane" which has zIndex 400 by default
-        // OSM tile layer is typically zIndex 200
-
-        layer = new GeoRasterLayer({
-          georaster: raster,
-          opacity: 1,
-          resolution: 8192,
-          pane: "geotiffPane"
-        });
-        layer.addTo(map);
-
-        // Fit map to the TIF's bounding box
-        map.fitBounds(layer.getBounds());
-
-        // If we want to disable panning/zooming, do so
-        if (disablePanZoom) {
-          map.dragging.disable();
-          map.touchZoom.disable();
-          map.doubleClickZoom.disable();
-          map.scrollWheelZoom.disable();
-          map.boxZoom.disable();
-          map.keyboard.disable();
-          const zoomControl = map.zoomControl;
-          if (zoomControl) map.removeControl(zoomControl);
-        }
-      } catch (err) {
-        console.error("Error loading GeoTIFF:", err);
-      }
+    const substationPoly = polygons.find(
+      (p) => p.label === "power_substation_polygon"
+    );
+    if (!substationPoly) {
+      map.setView([40, -95], 4); // fallback
+      return;
     }
 
-    loadRaster();
+    const latlngs = geoJsonToLatLngs(substationPoly.geometry);
+    if (!latlngs.length) {
+      map.setView([40, -95], 4);
+      return;
+    }
 
-    return () => {
-      // On unmount, remove the layer if still there
-      if (layer) map.removeLayer(layer);
-    };
-  }, [tifUrl, map, disablePanZoom]);
+    const bounds = L.latLngBounds(latlngs);
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [20, 20] });
+    } else {
+      map.setView([40, -95], 4);
+    }
+  }, [polygons, map]);
 
   return null;
 }
 
 export default function MapLeaflet({
-  tifUrl,
   polygons,
   disablePanZoom,
   onPolygonCreated,
@@ -117,25 +82,36 @@ export default function MapLeaflet({
 }: MapLeafletProps) {
   const handleCreated = (e: any) => {
     const geojson = e.layer.toGeoJSON();
-    if (onPolygonCreated) onPolygonCreated(geojson);
+    onPolygonCreated?.(geojson);
   };
+
+  // We do want to render everything except the substation polygon in "yellow"
+  // The substation polygon is effectively "invisible" if you choose
+  // or you can draw it in a special color.
+  const visiblePolygons = polygons; // if you'd rather not show substation boundary, filter it out
 
   return (
     <div style={{ width: "100%", height: "100%" }}>
       <MapContainer style={{ width: "100%", height: "100%" }} maxZoom={24}>
-        {/* A "natural" satellite-like basemap from ESRI */}
         <TileLayer
           url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
           attribution=""
+          maxNativeZoom={19}
+          maxZoom={24}
         />
+        {/* Auto-fit to substation boundary */}
+        <FitBoundsToSubstation polygons={polygons} />
 
-        {/* The TIF overlay in a custom pane */}
-        <GeoTiffOverlay tifUrl={tifUrl} disablePanZoom={disablePanZoom} />
-
-        {/* Existing polygons, clickable */}
-        {polygons.map((poly) => {
+        {/* Show polygons */}
+        {visiblePolygons.map((poly) => {
           const latlngs = geoJsonToLatLngs(poly.geometry);
-          const color = poly.confirmed ? "blue" : "yellow";
+          // maybe color the substation boundary differently:
+          const color =
+            poly.label === "power_substation_polygon"
+              ? "red"
+              : poly.confirmed
+              ? "blue"
+              : "yellow";
           return (
             <Polygon
               key={poly.id}
@@ -148,7 +124,7 @@ export default function MapLeaflet({
           );
         })}
 
-        {/* FeatureGroup with Leaflet Draw.  Put toolbar in top-right. */}
+        {/* FeatureGroup with Leaflet Draw */}
         <FeatureGroup>
           <EditControl
             position="topright"

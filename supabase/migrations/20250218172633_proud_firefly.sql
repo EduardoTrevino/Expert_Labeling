@@ -35,11 +35,22 @@ CREATE TABLE IF NOT EXISTS images (
 );
 
 
+CREATE TABLE IF NOT EXISTS substations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_id text,               -- optional, e.g. from OSM "full_id"
+  name text,                  -- optional human-friendly name
+  substation_type text,       -- "Transmission", "Distribution", etc.
+  geometry jsonb NOT NULL,    -- the substation polygon in GeoJSON
+  created_at timestamptz DEFAULT now(),
+  completed boolean DEFAULT false
+);
+
 CREATE TABLE IF NOT EXISTS component_polygons (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  image_id uuid REFERENCES images(id),
-  label text,               -- e.g. "power_line", "power_switch", etc.
-  geometry jsonb NOT NULL,  -- store geometry from the shapefile as GeoJSON
+  substation_id uuid REFERENCES substations(id),
+  label text,                 -- "power_line", "power_switch", etc.
+  geometry jsonb NOT NULL,    -- store geometry as GeoJSON
+  confirmed boolean DEFAULT false,
   created_at timestamptz DEFAULT now()
 );
 
@@ -55,6 +66,8 @@ CREATE TABLE IF NOT EXISTS annotations (
   created_by text NOT NULL,
   created_at timestamptz DEFAULT now()
 );
+
+
 
 -- Disable Row Level Security
 ALTER TABLE images DISABLE ROW LEVEL SECURITY;

@@ -15,9 +15,18 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 
-// Dynamically import the map
+/**
+ * We dynamically import the Leaflet map,
+ * which expects two main props:
+ *   polygons: PolygonData[]
+ *   onPolygonCreated(geojson)
+ *   onPolygonClicked(PolygonData)
+ */
 const MapLeaflet = dynamic(() => import("@/components/MapLeaflet"), { ssr: false });
 
+/**
+ * Substation types for user to select
+ */
 const SUBSTATION_TYPES = [
   "Transmission",
   "Distribution",
@@ -29,8 +38,18 @@ const SUBSTATION_TYPES = [
   "Other",
 ];
 
+/**
+ * Full list of substation components we care about (for the labeling UI).
+ * Some come from OSM shapefiles; others might be added by user drawing.
+ */
 const COMPONENT_OPTIONS = [
+  "Power compensator",
   "Power transformer",
+  "Power generator",
+  "Power line",
+  "Power plant",
+  "Power switch",
+  "Power tower",
   "Circuit switch",
   "Circuit breaker",
   "High side power area",
@@ -54,113 +73,129 @@ const COMPONENT_OPTIONS = [
   "Muffle",
 ];
 
-interface ImageData {
+interface SubstationData {
   id: string;
-  url: string; 
+  full_id?: string;
   name?: string;
-  uploaded_by: string;
-  created_at: string;
-  completed?: boolean;
   substation_type?: string;
+  geometry: any; // the substation polygon (GeoJSON)
+  created_at: string;
+  completed: boolean;
 }
 
-interface PolygonData {
+interface ComponentPolygon {
   id: string;
-  image_id: string;
+  substation_id: string | null; // if null, not yet assigned
   label: string;
   confirmed?: boolean;
-  geometry: {
-    type: string;
-    coordinates: any[][];
-  };
+  geometry: any; // geojson
+  created_at: string;
 }
 
 export default function AnnotateTab() {
-  const [images, setImages] = useState<ImageData[]>([]);
-  const [selectedImage, setSelectedImage] = useState<ImageData | null>(null);
+  const [substations, setSubstations] = useState<SubstationData[]>([]);
+  const [selectedSubstation, setSelectedSubstation] = useState<SubstationData | null>(null);
 
-  const [polygons, setPolygons] = useState<PolygonData[]>([]);
-  const [substationType, setSubstationType] = useState("");
-  const [substationTypeOther, setSubstationTypeOther] = useState("");
+  const [componentPolygons, setComponentPolygons] = useState<ComponentPolygon[]>([]);
+  const [substationType, setSubstationType] = useState<string>("");
 
+  // For the annotation dialog
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [dialogPolygon, setDialogPolygon] = useState<PolygonData | null>(null);
+  const [dialogPolygon, setDialogPolygon] = useState<ComponentPolygon | null>(null);
   const [selectedComponents, setSelectedComponents] = useState<string[]>([]);
   const [otherText, setOtherText] = useState("");
 
+  // We no longer guess "incomplete vs. complete" because we do not
+  // know how many components "should" be in a substation. But if you
+  // still want a quick display, you can do something simpler:
   const [incompleteLabels, setIncompleteLabels] = useState<string[]>(COMPONENT_OPTIONS);
   const [completeLabels, setCompleteLabels] = useState<string[]>([]);
 
-  // Filter out substation polygon if you prefer
-  const actualPolygons = polygons.filter((p) => p.label !== "power_substation_polygon");
-
+  // Fetch all substations from DB
   useEffect(() => {
-    fetchUncompletedImages();
+    fetchSubstations();
   }, []);
 
-  async function fetchUncompletedImages() {
-    const { data } = await supabase
-      .from("images")
+  async function fetchSubstations() {
+    const { data, error } = await supabase
+      .from("substations")
       .select("*")
-      .eq("completed", false)
       .order("created_at", { ascending: false });
-    setImages(data || []);
+    if (error) {
+      console.error(error);
+      return;
+    }
+    setSubstations(data || []);
+    // Optionally auto-select the first
     if (data && data.length > 0) {
-      setSelectedImage(data[0]);
+      setSelectedSubstation(data[0]);
+      setSubstationType(data[0].substation_type ?? "");
     }
   }
 
+  // Whenever user picks a substation from the sidebar
+  // we load its existing component polygons
   useEffect(() => {
-    if (!selectedImage) return;
-    fetchPolygonsForImage(selectedImage.id);
-    setSubstationType(selectedImage.substation_type || "");
-    setSubstationTypeOther("");
-  }, [selectedImage]);
+    if (!selectedSubstation) return;
+    setSubstationType(selectedSubstation.substation_type ?? "");
+    fetchComponentPolygons(selectedSubstation.id);
+  }, [selectedSubstation]);
 
-  async function fetchPolygonsForImage(imgId: string) {
-    const { data } = await supabase
+  async function fetchComponentPolygons(substationId: string) {
+    // We only fetch polygons that are assigned to this substation:
+    const { data, error } = await supabase
       .from("component_polygons")
       .select("*")
-      .eq("image_id", imgId);
-    setPolygons(data || []);
+      .eq("substation_id", substationId);
+    if (error) {
+      console.error(error);
+      return;
+    }
+    setComponentPolygons(data || []);
   }
 
-  function handleSelectImage(img: ImageData) {
-    setSelectedImage(img);
-    setPolygons([]);
+  function handleSelectSubstation(substation: SubstationData) {
+    setSelectedSubstation(substation);
+    setComponentPolygons([]);
   }
 
+  // Let user pick a substation type from a dropdown
   function handleSubstationTypeChange(val: string) {
     setSubstationType(val);
-    if (val === "Other") {
-      setSubstationTypeOther("");
-    } else {
+    if (val !== "Other") {
       updateSubstationType(val);
     }
   }
-  async function updateSubstationType(finalVal: string) {
-    if (!selectedImage) return;
-    await supabase
-      .from("images")
-      .update({ substation_type: finalVal })
-      .eq("id", selectedImage.id);
-  }
+
+  // If user chooses "Other" and then types a custom type
   function handleSubstationOtherBlur() {
-    if (!selectedImage) return;
-    if (substationType === "Other" && substationTypeOther.trim()) {
-      updateSubstationType(substationTypeOther.trim());
+    if (substationType === "Other" && otherText.trim() && selectedSubstation) {
+      updateSubstationType(otherText.trim());
     }
   }
 
-  // Called when user finishes drawing polygon
+  async function updateSubstationType(finalVal: string) {
+    if (!selectedSubstation) return;
+    const { error } = await supabase
+      .from("substations")
+      .update({ substation_type: finalVal })
+      .eq("id", selectedSubstation.id);
+    if (error) console.error(error);
+  }
+
+  /**
+   * MAP: When user draws a new polygon in Leaflet
+   */
   function handlePolygonCreated(geojson: any) {
-    if (!selectedImage) return;
-    const newPoly: PolygonData = {
+    if (!selectedSubstation) return;
+    // This is brand new => substation_id = that substation
+    const newPoly: ComponentPolygon = {
       id: `temp-${Date.now()}`,
-      image_id: selectedImage.id,
+      substation_id: selectedSubstation.id,
       label: "",
       confirmed: false,
       geometry: geojson.geometry,
+      created_at: new Date().toISOString(),
     };
     setDialogPolygon(newPoly);
     setSelectedComponents([]);
@@ -168,8 +203,15 @@ export default function AnnotateTab() {
     setDialogOpen(true);
   }
 
-  function handlePolygonClicked(poly: PolygonData) {
-    if (poly.label === "power_substation_polygon") return;
+  /**
+   * MAP: Clicking an existing polygon => open annotation dialog
+   * We skip if label === "power_substation_polygon" because
+   * the substation boundary is not for editing. But in
+   * this approach, we store the boundary in `substations`,
+   * not `component_polygons`, so it won't appear as a component anyway.
+   */
+  function handlePolygonClicked(poly: ComponentPolygon) {
+    // open the dialog to re-label or delete
     setDialogPolygon(poly);
     if (COMPONENT_OPTIONS.includes(poly.label)) {
       setSelectedComponents([poly.label]);
@@ -187,45 +229,56 @@ export default function AnnotateTab() {
     );
   }
 
+  /**
+   * Dialog "Save" => either insert or update the polygon in `component_polygons`
+   */
   async function handleSavePolygon() {
-    if (!dialogPolygon) return;
+    if (!dialogPolygon || !selectedSubstation) return;
     let finalLabel = "";
     if (selectedComponents.length > 0) {
+      // If user picked from known list
       finalLabel = selectedComponents[0];
     } else if (otherText.trim()) {
+      // If user typed a custom label
       finalLabel = otherText.trim();
     }
-    const isTemp = dialogPolygon.id.startsWith("temp-");
 
+    const isTemp = dialogPolygon.id.startsWith("temp-");
     if (isTemp) {
       // Insert new
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("component_polygons")
         .insert([
           {
-            image_id: dialogPolygon.image_id,
+            substation_id: selectedSubstation.id,
             label: finalLabel,
             geometry: dialogPolygon.geometry,
             confirmed: false,
           },
         ])
         .select("*");
-      if (data && data.length > 0) {
-        setPolygons((prev) => [...prev, data[0]]);
+      if (!error && data && data.length > 0) {
+        setComponentPolygons((prev) => [...prev, data[0]]);
+      } else if (error) {
+        console.error(error);
       }
     } else {
       // Update existing
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("component_polygons")
         .update({ label: finalLabel, confirmed: false })
         .eq("id", dialogPolygon.id)
         .select("*");
-      if (data && data.length > 0) {
-        setPolygons((prev) =>
+      if (!error && data && data.length > 0) {
+        setComponentPolygons((prev) =>
           prev.map((p) =>
-            p.id === dialogPolygon.id ? { ...p, label: finalLabel, confirmed: false } : p
+            p.id === dialogPolygon.id
+              ? { ...p, label: finalLabel, confirmed: false }
+              : p
           )
         );
+      } else if (error) {
+        console.error(error);
       }
     }
 
@@ -233,45 +286,59 @@ export default function AnnotateTab() {
     setDialogOpen(false);
   }
 
+  /**
+   * Dialog "Delete" => remove from DB if already inserted
+   */
   async function handleDeletePolygon() {
     if (!dialogPolygon) return;
+
     if (dialogPolygon.id.startsWith("temp-")) {
+      // Not yet in DB => just remove from local
       setDialogPolygon(null);
       setDialogOpen(false);
       return;
     }
-    await supabase
+
+    // Delete from supabase
+    const { error } = await supabase
       .from("component_polygons")
       .delete()
       .eq("id", dialogPolygon.id);
-    setPolygons((prev) => prev.filter((p) => p.id !== dialogPolygon.id));
+    if (error) {
+      console.error(error);
+    } else {
+      setComponentPolygons((prev) => prev.filter((p) => p.id !== dialogPolygon.id));
+    }
     setDialogPolygon(null);
     setDialogOpen(false);
   }
 
-  // Mark entire image as complete
-  async function handleCompleteImage() {
-    if (!selectedImage) return;
-    if (!substationType || (substationType === "Other" && !substationTypeOther.trim())) {
-      alert("Please select/enter substation type.");
+  /**
+   * When user is done with a substation, mark it as complete
+   */
+  async function handleCompleteSubstation() {
+    if (!selectedSubstation) return;
+    // We set completed=true
+    const { error } = await supabase
+      .from("substations")
+      .update({ completed: true })
+      .eq("id", selectedSubstation.id);
+    if (error) {
+      console.error(error);
+      alert("Error completing substation");
       return;
     }
-    if (substationType === "Other" && substationTypeOther.trim()) {
-      await updateSubstationType(substationTypeOther.trim());
-    }
-    await supabase
-      .from("images")
-      .update({ completed: true })
-      .eq("id", selectedImage.id);
-    setImages((prev) => prev.filter((im) => im.id !== selectedImage.id));
-    setSelectedImage(null);
-    setPolygons([]);
-    alert("Image completed!");
+    alert("Substation completed!");
+
+    // Remove from local list
+    setSubstations((prev) => prev.filter((s) => s.id !== selectedSubstation.id));
+    setSelectedSubstation(null);
+    setComponentPolygons([]);
   }
 
-  // Distinguish incomplete vs. complete from "confirmed" polygons
+  // Optional: still show "complete vs incomplete" based on `confirmed`?
   useEffect(() => {
-    const usedLabels = actualPolygons
+    const usedLabels = componentPolygons
       .filter((p) => p.confirmed && COMPONENT_OPTIONS.includes(p.label))
       .map((p) => p.label);
     const uniqueUsed = Array.from(new Set(usedLabels));
@@ -279,27 +346,52 @@ export default function AnnotateTab() {
     const incomplete = COMPONENT_OPTIONS.filter((opt) => !uniqueUsed.includes(opt));
     setCompleteLabels(complete);
     setIncompleteLabels(incomplete);
-  }, [actualPolygons]);
+  }, [componentPolygons]);
+
+  /**
+   * For the map, we combine:
+   *  - The substation boundary itself (labeled "power_substation_polygon")
+   *  - The component polygons from `componentPolygons`
+   */
+  function getMapPolygons() {
+    if (!selectedSubstation) return [];
+
+    // Substation boundary as a "PolygonData"
+    const boundaryPolygon = {
+      id: "substation_" + selectedSubstation.id,
+      substation_id: selectedSubstation.id,
+      label: "power_substation_polygon",
+      confirmed: true,
+      geometry: selectedSubstation.geometry,
+      created_at: selectedSubstation.created_at,
+    };
+
+    return [boundaryPolygon, ...componentPolygons];
+  }
 
   return (
     <div className="flex gap-4 mt-6">
       {/* Sidebar */}
       <div className="w-64 flex flex-col">
         <div className="mb-4 font-semibold text-gray-800">
-          {images.length} images left to annotate
+          {substations.length} substations left to annotate
         </div>
         <ScrollArea className="h-[600px]">
           <div className="flex flex-col space-y-2">
-            {images.map((img) => (
+            {substations.map((sub) => (
               <div
-                key={img.id}
+                key={sub.id}
                 className={`p-2 rounded hover:bg-gray-100 cursor-pointer ${
-                  selectedImage?.id === img.id ? "bg-gray-200" : ""
+                  selectedSubstation?.id === sub.id ? "bg-gray-200" : ""
                 }`}
-                onClick={() => handleSelectImage(img)}
+                onClick={() => handleSelectSubstation(sub)}
               >
-                <div className="text-sm font-medium">{img.name || "Unnamed"}</div>
-                <div className="text-xs text-gray-600">By: {img.uploaded_by}</div>
+                <div className="text-sm font-medium">
+                  {sub.full_id || sub.name || "Unnamed Substation"}
+                </div>
+                <div className="text-xs text-gray-600">
+                  {sub.created_at.slice(0, 10)}
+                </div>
               </div>
             ))}
           </div>
@@ -308,9 +400,9 @@ export default function AnnotateTab() {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col relative">
-        {selectedImage ? (
+        {selectedSubstation ? (
           <Card className="p-4 bg-white shadow-md flex-1 flex flex-col">
-            {/* Substation Type row */}
+            {/* Substation type row */}
             <div className="mb-2 flex items-center gap-2">
               <label className="font-bold">Substation Type:</label>
               <select
@@ -330,14 +422,14 @@ export default function AnnotateTab() {
                   type="text"
                   placeholder="Enter substation type"
                   className="border rounded px-2 py-1"
-                  value={substationTypeOther}
-                  onChange={(e) => setSubstationTypeOther(e.target.value)}
+                  value={otherText}
+                  onChange={(e) => setOtherText(e.target.value)}
                   onBlur={handleSubstationOtherBlur}
                 />
               )}
             </div>
 
-            {/* Badge row */}
+            {/* Badge row (optional) */}
             <div className="flex gap-6 mb-2">
               <div>
                 <div className="text-sm font-semibold mb-1">Incomplete</div>
@@ -361,28 +453,27 @@ export default function AnnotateTab() {
               </div>
             </div>
 
-            {/* Leaflet map => let user pan/zoom. No disablePanZoom */}
+            {/* Map */}
             <div className="flex-1 relative border" style={{ minHeight: 400 }}>
               <MapLeaflet
-                tifUrl={selectedImage.url}
-                polygons={actualPolygons}
-                disablePanZoom={false} // let user move around & zoom
+                polygons={getMapPolygons()}
+                disablePanZoom={false}
                 onPolygonCreated={handlePolygonCreated}
                 onPolygonClicked={handlePolygonClicked}
               />
             </div>
 
-            {/* Complete image button bottom-right */}
+            {/* Complete substation button */}
             <Button
-              onClick={handleCompleteImage}
-              className="bottom-4 right-4 bg-blue-300 text-black"
+              onClick={handleCompleteSubstation}
+              className="bottom-4 right-4 bg-blue-300 text-black mt-4"
             >
-              Complete Image
+              Complete Substation
             </Button>
           </Card>
         ) : (
           <div className="p-8 text-gray-600">
-            Select an image from the sidebar.
+            Select a substation from the sidebar.
           </div>
         )}
       </div>
@@ -394,7 +485,7 @@ export default function AnnotateTab() {
           style={{ position: "absolute", cursor: "move" }}
         >
           <DialogHeader>
-            <DialogTitle>Annotate Component</DialogTitle>
+            <DialogTitle>Annotate / Confirm Component</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 h-64 overflow-auto">
             {COMPONENT_OPTIONS.map((option) => {
@@ -412,7 +503,7 @@ export default function AnnotateTab() {
             })}
             <div className="mt-4">
               <label className="block text-sm font-medium text-gray-700">
-                Other:
+                Other Label:
               </label>
               <input
                 type="text"
