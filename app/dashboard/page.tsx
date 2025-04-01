@@ -20,7 +20,7 @@ export default function Dashboard() {
         value={activeTab}
         onValueChange={setActiveTab}
       >
-        <TabsList className="grid w-full grid-cols-4 bg-navy-50">
+        <TabsList className="grid w-full grid-cols-3 bg-navy-50">
           <TabsTrigger
             value="annotate"
             className="text-navy-900 data-[state=active]:bg-navy-100"
@@ -31,14 +31,14 @@ export default function Dashboard() {
             value="complete"
             className="text-navy-900 data-[state=active]:bg-navy-100"
           >
-            Complete
+            Completed
           </TabsTrigger>
-          <TabsTrigger
+          {/* <TabsTrigger
             value="upload"
             className="text-navy-900 data-[state=active]:bg-navy-100"
           >
             Upload
-          </TabsTrigger>
+          </TabsTrigger> */}
           <TabsTrigger
             value="download"
             className="text-navy-900 data-[state=active]:bg-navy-100"
@@ -52,9 +52,9 @@ export default function Dashboard() {
         <TabsContent value="complete">
           <CompleteTab />
         </TabsContent>
-        <TabsContent value="upload">
+        {/* <TabsContent value="upload">
           <UploadTab />
-        </TabsContent>
+        </TabsContent> */}
         <TabsContent value="download">
           <DownloadTab />
         </TabsContent>
