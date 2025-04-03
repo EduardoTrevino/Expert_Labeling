@@ -9,6 +9,7 @@ import {
   Polyline,
   CircleMarker,
   useMap,
+  Tooltip,
 } from "react-leaflet";
 import { EditControl } from "react-leaflet-draw";
 import L from "leaflet";
@@ -25,10 +26,10 @@ export interface ComponentPolygon {
     coordinates: any;
   };
   created_at: string;
-  substation_full_id?: string; // optional
+  substation_full_id?: string;
+  from_osm: boolean;
 }
 
-// We define some color mapping for known labels
 const LABEL_COLORS: Record<string, string> = {
   "Power Compensator": "#00AAFF", // cyan-blue
   "Power Transformer": "#FF00AA", // magenta-pink
@@ -39,32 +40,32 @@ const LABEL_COLORS: Record<string, string> = {
   "Power Tower": "#0000FF",       // blue
 };
 
-function FitBoundsToSubstation({ polygons }: { polygons: ComponentPolygon[] }) {
+/**
+ * Only run fit-bounds when substation changes, not on every polygon toggle.
+ */
+function FitBoundsToSubstation({
+  polygons,
+  substationId,
+}: {
+  polygons: ComponentPolygon[];
+  substationId: string;
+}) {
   const map = useMap();
 
   useEffect(() => {
-    const substationPoly = polygons.find(
-      (p) => p.label === "power_substation_polygon"
-    );
-    if (!substationPoly || substationPoly.geometry?.type !== "Polygon") {
-      map.setView([40, -95], 4);
-      return;
-    }
+    // On substation change, find the "power_substation_polygon"
+    const subPoly = polygons.find((p) => p.label === "power_substation_polygon");
+    if (!subPoly || subPoly.geometry?.type !== "Polygon") return;
 
-    const ring = substationPoly.geometry.coordinates[0];
-    if (!ring || ring.length === 0) {
-      map.setView([40, -95], 4);
-      return;
-    }
+    const ring = subPoly.geometry.coordinates[0];
+    if (!ring || ring.length === 0) return;
 
     const latlngs = ring.map(([lng, lat]: [number, number]) => [lat, lng]);
     const bounds = L.latLngBounds(latlngs);
     if (bounds.isValid()) {
       map.fitBounds(bounds, { padding: [20, 20] });
-    } else {
-      map.setView([40, -95], 4);
     }
-  }, [polygons, map]);
+  }, [substationId]); // << Only runs when substationId changes
 
   return null;
 }
@@ -81,69 +82,68 @@ function convertPointCoord(coords: number[]) {
 }
 
 /**
- * Renders each component on the map.
- *  - If `confirmed === true` => color = green
- *  - Else if newly drawn => color = yellow
- *  - Else color by LABEL_COLORS or fallback to "blue"
- *  - Substation boundary => red outline, not interactive
+ * Renders each polygon/line/point with the desired style.
+ *  - from_osm => not clickable, show a tooltip with `label` on hover
+ *  - user polygons => clickable (if you want) to open edit dialog
+ *  - newly drawn => color = yellow
+ *  - substation boundary => red, no click
  */
 function renderFeature(
   poly: ComponentPolygon,
   onPolygonClicked?: (p: ComponentPolygon) => void
 ) {
-  const { geometry, label, confirmed, id } = poly;
-  // If user tries to click => pass it up, unless it's the substation boundary
-  const handleClick = () => onPolygonClicked?.(poly);
-
+  const { geometry, label, confirmed, from_osm, id } = poly;
   const isNewShape = id.startsWith("temp-");
 
-  // For substation boundary, we show a red outline and make it NOT clickable
+  // Substation boundary: red outline, not interactive
   if (label === "power_substation_polygon") {
     if (geometry.type === "Polygon") {
       const outerRing = geometry.coordinates[0] || [];
       const latlngs = convertPolygonRing(outerRing);
-
       return (
         <Polygon
-          key={poly.id}
-          pathOptions={{
-            color: "red",
-            fill: false,
-            weight: 2,
-            interactive: false, // disable clicks
-          }}
+          key={id}
+          pathOptions={{ color: "red", fill: false, weight: 2, interactive: false }}
           positions={latlngs}
         />
       );
     }
-    return null; // if not a polygon for some reason
+    return null;
   }
 
-  // Decide color
-  let color = "blue";
+  // Choose color
+  let color = "green";
   if (confirmed) {
     color = "green";
   } else if (isNewShape) {
-    color = "yellow";
+    color = "green";
   } else {
-    color = LABEL_COLORS[label] || "blue";
+    color = LABEL_COLORS[label] || "green";
   }
 
+  // If from_osm => no clicks, just a tooltip
+  // If user polygon => clickable => pass up onPolygonClicked
+  const eventHandlers = from_osm
+    ? {}
+    : { click: () => onPolygonClicked?.(poly) };
+
+  // All polygons show a tooltip on hover with the label
+  // (Leaflet <Tooltip> defaults to show on hover)
   switch (geometry.type) {
     case "Polygon": {
       const outerRing = geometry.coordinates[0] || [];
       const latlngs = convertPolygonRing(outerRing);
       return (
         <Polygon
-          key={poly.id}
-          pathOptions={{
-            color,
-            fill: false,
-            weight: 3,
-          }}
+          key={id}
+          pathOptions={{ color, fill: false, weight: 3 }}
           positions={latlngs}
-          eventHandlers={{ click: handleClick }}
-        />
+          eventHandlers={eventHandlers}
+        >
+          <Tooltip direction="auto" sticky>
+            {label}
+          </Tooltip>
+        </Polygon>
       );
     }
     case "LineString": {
@@ -151,11 +151,15 @@ function renderFeature(
       const latlngs = convertLineCoords(coords);
       return (
         <Polyline
-          key={poly.id}
+          key={id}
           pathOptions={{ color, weight: 3 }}
           positions={latlngs}
-          eventHandlers={{ click: handleClick }}
-        />
+          eventHandlers={eventHandlers}
+        >
+          <Tooltip direction="auto" sticky>
+            {label}
+          </Tooltip>
+        </Polyline>
       );
     }
     case "Point": {
@@ -163,12 +167,16 @@ function renderFeature(
       const latlng = convertPointCoord(coords);
       return (
         <CircleMarker
-          key={poly.id}
+          key={id}
           center={latlng}
           pathOptions={{ color, fillColor: color, fillOpacity: 1 }}
           radius={5}
-          eventHandlers={{ click: handleClick }}
-        />
+          eventHandlers={eventHandlers}
+        >
+          <Tooltip direction="auto" sticky>
+            {label}
+          </Tooltip>
+        </CircleMarker>
       );
     }
     default:
@@ -178,34 +186,32 @@ function renderFeature(
 
 interface MapLeafletProps {
   polygons: ComponentPolygon[];
-  disablePanZoom?: boolean;
   onPolygonCreated?: (geojson: any) => void;
   onPolygonClicked?: (poly: ComponentPolygon) => void;
 }
 
 export default function MapLeaflet({
   polygons,
-  disablePanZoom,
   onPolygonCreated,
   onPolygonClicked,
 }: MapLeafletProps) {
   // Called when user draws a new shape
-  const handleCreated = (e: any) => {
+  function handleCreated(e: any) {
     const geojson = e.layer.toGeoJSON();
     onPolygonCreated?.(geojson);
-  };
+  }
 
-  // Gather unique labels for the legend
+  // Identify substation ID so we can re‐fit only on substation change
+  const subPoly = polygons.find((p) => p.label === "power_substation_polygon");
+  const substationId = subPoly?.substation_id || "no_substation";
+
+  // Build legend
   const presentLabels = Array.from(
     new Set(
-      polygons
-        .filter(
-          (p) => p.label !== "power_substation_polygon" && !p.id.startsWith("temp-")
-        )
-        .map((p) => p.label)
+      polygons.filter((p) => p.label !== "power_substation_polygon").map((p) => p.label)
     )
   );
-
+// Unoffical google tile (NOTE YOU CAN GET BANNED AND IS AGAINST THEIR TOS: https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z})
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
       <MapContainer style={{ width: "100%", height: "100%" }} maxZoom={24}>
@@ -215,9 +221,9 @@ export default function MapLeaflet({
           maxNativeZoom={19}
           maxZoom={24}
         />
-
-        {/* Auto-fit the substation polygon's bounding box */}
-        <FitBoundsToSubstation polygons={polygons} />
+/
+        {/* Fit bounds only on substation change */}
+        <FitBoundsToSubstation polygons={polygons} substationId={substationId} />
 
         {/* Render each feature */}
         {polygons.map((poly) => renderFeature(poly, onPolygonClicked))}
@@ -226,7 +232,13 @@ export default function MapLeaflet({
           <EditControl
             position="topright"
             draw={{
-              polygon: true,
+              polygon: {
+                shapeOptions: {
+                  fill: false,       // Disable any fill color
+                  color: "green",  // Outline color (pick whatever you like)
+                  weight: 2,
+                },
+              },
               marker: false,
               polyline: false,
               rectangle: false,
@@ -259,7 +271,7 @@ export default function MapLeaflet({
         <div style={{ fontWeight: "bold", marginBottom: "4px" }}>Legend</div>
 
         {presentLabels.map((lbl) => {
-          const clr = LABEL_COLORS[lbl] || "blue";
+          const clr = LABEL_COLORS[lbl] || "green";
           return (
             <div
               key={lbl}
@@ -279,35 +291,6 @@ export default function MapLeaflet({
           );
         })}
 
-        {/* Newly drawn */}
-        <div style={{ display: "flex", alignItems: "center", marginTop: 6 }}>
-          <div
-            style={{
-              width: 16,
-              height: 16,
-              background: "yellow",
-              border: "2px solid yellow",
-              marginRight: 6,
-            }}
-          />
-          Newly Drawn
-        </div>
-
-        {/* Confirmed => green */}
-        <div style={{ display: "flex", alignItems: "center", marginTop: 6 }}>
-          <div
-            style={{
-              width: 16,
-              height: 16,
-              background: "green",
-              border: "2px solid green",
-              marginRight: 6,
-            }}
-          />
-          Confirmed
-        </div>
-
-        {/* Substation boundary */}
         <div style={{ display: "flex", alignItems: "center", marginTop: 6 }}>
           <div
             style={{

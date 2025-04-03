@@ -13,6 +13,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch"; // or your UI kit’s toggle
 
 const MapLeaflet = dynamic(() => import("@/components/MapLeaflet"), { ssr: false });
 
@@ -76,6 +77,7 @@ interface ComponentPolygon {
   confirmed?: boolean;
   geometry: any;
   created_at: string;
+  from_osm: boolean;
 }
 
 export default function CompleteTab() {
@@ -84,6 +86,7 @@ export default function CompleteTab() {
 
   const [componentPolygons, setComponentPolygons] = useState<ComponentPolygon[]>([]);
   const [substationType, setSubstationType] = useState<string>("");
+  const [showOsmPolygons, setShowOsmPolygons] = useState(true);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogPolygon, setDialogPolygon] = useState<ComponentPolygon | null>(null);
@@ -118,18 +121,21 @@ export default function CompleteTab() {
 
   async function fetchComponentPolygons(substationId: string) {
     // assigned
-    const { data: assigned } = await supabase
+    const { data: assigned, error: assignedErr } = await supabase
       .from("component_polygons")
       .select("*")
       .eq("substation_uuid", substationId);
+    if (assignedErr) console.error(assignedErr);
 
     // unassigned
-    const { data: unassigned } = await supabase
+    const { data: unassigned, error: unassignedErr } = await supabase
       .from("component_polygons")
       .select("*")
       .is("substation_uuid", null);
+    if (unassignedErr) console.error(unassignedErr);
 
-    setComponentPolygons([...(assigned || []), ...(unassigned || [])]);
+    const combined = [...(assigned || []), ...(unassigned || [])];
+    setComponentPolygons(combined);
   }
 
   function handleSelectSubstation(sub: SubstationData) {
@@ -142,11 +148,12 @@ export default function CompleteTab() {
     const newPoly: ComponentPolygon = {
       id: `temp-${Date.now()}`,
       substation_id: selectedSubstation.id,
-      substation_full_id: selectedSubstation.full_id,
       label: "",
-      confirmed: false,
+      confirmed: false, // not used anymore, but remains in DB
       geometry: geojson.geometry,
       created_at: new Date().toISOString(),
+      substation_full_id: selectedSubstation.full_id || undefined,
+      from_osm: false,
     };
     setDialogPolygon(newPoly);
     setSelectedComponents([]);
@@ -155,6 +162,12 @@ export default function CompleteTab() {
   }
 
   function handlePolygonClicked(poly: ComponentPolygon) {
+    // For newly-drawn polygons we can still allow editing:
+    if (poly.from_osm) {
+      // If from_osm => do nothing now that we don't confirm them
+      return;
+    }
+    // Else open the dialog so user can rename or delete
     setDialogPolygon(poly);
     if (COMPONENT_OPTIONS.includes(poly.label)) {
       setSelectedComponents([poly.label]);
@@ -183,10 +196,12 @@ export default function CompleteTab() {
       substation_full_id: dialogPolygon.substation_full_id ?? selectedSubstation.full_id ?? null,
       label: finalLabel,
       geometry: dialogPolygon.geometry,
-      confirmed: true,
+      confirmed: false, // or true, whichever you prefer to store
+      from_osm: false,
     };
 
     if (isTemp) {
+      // insert
       const { data, error } = await supabase
         .from("component_polygons")
         .insert([payload])
@@ -197,6 +212,7 @@ export default function CompleteTab() {
         console.error(error);
       }
     } else {
+      // update
       const { data, error } = await supabase
         .from("component_polygons")
         .update(payload)
@@ -253,34 +269,51 @@ export default function CompleteTab() {
   }
 
   function getMapPolygons() {
-    if (!selectedSubstation) return componentPolygons;
-    const boundary = {
+    if (!selectedSubstation) return [];
+    const boundaryPolygon: ComponentPolygon = {
       id: "substation_" + selectedSubstation.id,
       substation_id: selectedSubstation.id,
-      substation_full_id: selectedSubstation.full_id,
       label: "power_substation_polygon",
-      confirmed: true,
+      confirmed: false,
       geometry: selectedSubstation.geometry,
       created_at: selectedSubstation.created_at,
+      substation_full_id: selectedSubstation.full_id,
+      from_osm: true,
     };
-    return [boundary, ...componentPolygons];
+
+    const filtered = showOsmPolygons
+      ? componentPolygons
+      : componentPolygons.filter((p) => p.from_osm === false);
+
+    // Return boundary + filtered polygons
+    return [boundaryPolygon, ...filtered];
   }
 
   // Summaries
   const labelTotals: Record<string, number> = {};
-  const labelConfirmed: Record<string, number> = {};
   componentPolygons.forEach((cp) => {
     if (!cp.label) return;
     labelTotals[cp.label] = (labelTotals[cp.label] || 0) + 1;
-    if (cp.confirmed) {
-      labelConfirmed[cp.label] = (labelConfirmed[cp.label] || 0) + 1;
-    }
   });
-  const summaryRows = Object.keys(labelTotals).sort().map((lbl) => ({
-    lbl,
-    total: labelTotals[lbl],
-    confirmed: labelConfirmed[lbl] || 0,
-  }));
+
+  const summaryRows = Object.keys(labelTotals)
+    .sort()
+    .map((lbl) => ({
+      lbl,
+      total: labelTotals[lbl],
+    }));
+
+    useEffect(() => {
+      function handleKeyDown(e: KeyboardEvent) {
+        // Example: press "o" toggles showOsmPolygons
+        if (e.key === "o" || e.key === "O") {
+          setShowOsmPolygons((prev) => !prev);
+        }
+      }
+      window.addEventListener("keydown", handleKeyDown);
+      return () => window.removeEventListener("keydown", handleKeyDown);
+    }, []);
+  
 
   return (
     <div className="flex gap-4 mt-6">
@@ -311,6 +344,17 @@ export default function CompleteTab() {
       </div>
 
       <div className="flex-1 flex flex-col relative">
+        {/* Toggle OSM data positioned absolutely */}
+        <div className="absolute top-2 right-2 z-[500] bg-white bg-opacity-90 p-2 rounded shadow-md flex items-center gap-2">
+          <label htmlFor="toggle-osm" className="text-sm font-medium">
+            Show OSM Polygons (Shortcut "o")
+          </label>
+          <Switch
+            id="toggle-osm"
+            checked={showOsmPolygons}
+            onCheckedChange={setShowOsmPolygons}
+          />
+        </div>
         {selectedSubstation ? (
           <>
             <Card className="p-4 bg-white shadow-md flex-1 flex flex-col mb-4">
@@ -345,15 +389,13 @@ export default function CompleteTab() {
                     <tr className="bg-gray-50">
                       <th className="px-2 py-1 border-b text-left">Label</th>
                       <th className="px-2 py-1 border-b text-left">Total</th>
-                      <th className="px-2 py-1 border-b text-left">Confirmed</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {summaryRows.map(({ lbl, total, confirmed }) => (
+                    {summaryRows.map(({ lbl, total }) => (
                       <tr key={lbl}>
                         <td className="px-2 py-1 border-b">{lbl}</td>
                         <td className="px-2 py-1 border-b">{total}</td>
-                        <td className="px-2 py-1 border-b">{confirmed}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -363,7 +405,7 @@ export default function CompleteTab() {
           </>
         ) : (
           <div className="p-8 text-gray-600">
-            Select a completed substation from the sidebar.
+            Select a substation from the sidebar.
           </div>
         )}
       </div>
@@ -372,10 +414,10 @@ export default function CompleteTab() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent
           className="z-[9999] max-w-lg"
-          style={{ position: "absolute", cursor: "move" }}
+          style={{ position: "absolute"}}
         >
           <DialogHeader>
-            <DialogTitle>Annotate / Confirm Component</DialogTitle>
+            <DialogTitle>Update Component</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 h-64 overflow-auto">
             {COMPONENT_OPTIONS.map((option) => {

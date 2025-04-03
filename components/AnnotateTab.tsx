@@ -13,8 +13,9 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch"; // your UI kit’s toggle
 
-// We dynamically import the Leaflet map
+// Dynamically import the Leaflet map
 const MapLeaflet = dynamic(() => import("@/components/MapLeaflet"), { ssr: false });
 
 const SUBSTATION_TYPES = [
@@ -63,7 +64,7 @@ interface SubstationData {
   id: string;
   full_id?: string;
   name?: string;
-  substation_type?: string | null; // might be null
+  substation_type?: string | null;
   geometry: any;
   created_at: string;
   completed: boolean;
@@ -73,27 +74,31 @@ interface ComponentPolygon {
   id: string;
   substation_id: string | null;
   label: string;
-  confirmed?: boolean;
+  confirmed?: boolean; // no longer needed, but we can keep it in TS
   geometry: any;
   created_at: string;
-  substation_full_id?: string; // for OSM full_id reference
+  substation_full_id?: string;
+  from_osm: boolean;
 }
 
 export default function AnnotateTab() {
   const [substations, setSubstations] = useState<SubstationData[]>([]);
   const [selectedSubstation, setSelectedSubstation] = useState<SubstationData | null>(null);
-
   const [componentPolygons, setComponentPolygons] = useState<ComponentPolygon[]>([]);
+  const [showOsmPolygons, setShowOsmPolygons] = useState(true);
+
   const [substationType, setSubstationType] = useState<string>("");
   const [substationTypeNeedsHighlight, setSubstationTypeNeedsHighlight] = useState<boolean>(false);
 
-  // For the annotation dialog
+  // Dialog for newly drawn polygons
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogPolygon, setDialogPolygon] = useState<ComponentPolygon | null>(null);
   const [selectedComponents, setSelectedComponents] = useState<string[]>([]);
   const [otherText, setOtherText] = useState("");
 
-  // On mount, load all substations
+  // ─────────────────────────────────────────────────────────────
+  // 1. Load uncompleted substations
+  // ─────────────────────────────────────────────────────────────
   useEffect(() => {
     fetchSubstations();
   }, []);
@@ -114,7 +119,9 @@ export default function AnnotateTab() {
     }
   }
 
-  // Whenever substation changes, load polygons
+  // ─────────────────────────────────────────────────────────────
+  // 2. Whenever substation changes, fetch polygons + set type
+  // ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!selectedSubstation) return;
     setupSubstationType(selectedSubstation.substation_type ?? "");
@@ -157,6 +164,9 @@ export default function AnnotateTab() {
     setComponentPolygons(combined);
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // 3. Substation selection
+  // ─────────────────────────────────────────────────────────────
   function handleSelectSubstation(sub: SubstationData) {
     setSelectedSubstation(sub);
     setComponentPolygons([]);
@@ -188,17 +198,20 @@ export default function AnnotateTab() {
     if (error) console.error(error);
   }
 
-  // MAP: user draws a new polygon => open dialog
+  // ─────────────────────────────────────────────────────────────
+  // 4. User draws a new polygon => open annotation dialog
+  // ─────────────────────────────────────────────────────────────
   function handlePolygonCreated(geojson: any) {
     if (!selectedSubstation) return;
     const newPoly: ComponentPolygon = {
       id: `temp-${Date.now()}`,
       substation_id: selectedSubstation.id,
       label: "",
-      confirmed: false,
+      confirmed: false, // not used anymore, but remains in DB
       geometry: geojson.geometry,
       created_at: new Date().toISOString(),
       substation_full_id: selectedSubstation.full_id || undefined,
+      from_osm: false,
     };
     setDialogPolygon(newPoly);
     setSelectedComponents([]);
@@ -206,9 +219,14 @@ export default function AnnotateTab() {
     setDialogOpen(true);
   }
 
-  // MAP: clicking existing shape => open dialog
+  // (we still want user polygons to be clickable & editable,)
   function handlePolygonClicked(poly: ComponentPolygon) {
-    // If the label is known => check it; else put in "Other"
+    // For newly-drawn polygons we can still allow editing:
+    if (poly.from_osm) {
+      // If from_osm => do nothing now that we don't confirm them
+      return;
+    }
+    // Else open the dialog so user can rename or delete
     setDialogPolygon(poly);
     if (COMPONENT_OPTIONS.includes(poly.label)) {
       setSelectedComponents([poly.label]);
@@ -220,14 +238,15 @@ export default function AnnotateTab() {
     setDialogOpen(true);
   }
 
-  // toggling a label in the checkbox list
+  // ─────────────────────────────────────────────────────────────
+  // 5. Dialog: choose label
+  // ─────────────────────────────────────────────────────────────
   function toggleComponent(c: string) {
     setSelectedComponents((prev) =>
       prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
     );
   }
 
-  // Save changes from the dialog
   async function handleSavePolygon() {
     if (!dialogPolygon || !selectedSubstation) return;
     const finalLabel =
@@ -239,7 +258,8 @@ export default function AnnotateTab() {
       substation_full_id: dialogPolygon.substation_full_id ?? selectedSubstation.full_id ?? null,
       label: finalLabel,
       geometry: dialogPolygon.geometry,
-      confirmed: true,
+      confirmed: false, // or true, whichever you prefer to store
+      from_osm: false,
     };
 
     if (isTemp) {
@@ -275,7 +295,7 @@ export default function AnnotateTab() {
   async function handleDeletePolygon() {
     if (!dialogPolygon) return;
     if (dialogPolygon.id.startsWith("temp-")) {
-      // not in DB
+      // Not in DB yet
       setDialogOpen(false);
       setDialogPolygon(null);
       return;
@@ -292,15 +312,15 @@ export default function AnnotateTab() {
     setDialogPolygon(null);
   }
 
-  // Mark substation complete => ensure substation_type is chosen
+  // ─────────────────────────────────────────────────────────────
+  // 6. Mark substation complete
+  // ─────────────────────────────────────────────────────────────
   async function handleCompleteSubstation() {
     if (!selectedSubstation) return;
     if (!substationType) {
       alert("Please select a substation type before completing.");
       return;
     }
-
-    // everything is good => complete
     const { error } = await supabase
       .from("substations")
       .update({ completed: true })
@@ -316,40 +336,63 @@ export default function AnnotateTab() {
     setComponentPolygons([]);
   }
 
-  // The polygons for the map => we do NOT inject substation boundary as clickable
+  // ─────────────────────────────────────────────────────────────
+  // 7. Return polygons for the map
+  //    - Always include boundaryPolygon (the substation perimeter)
+  //    - Hide OSM polygons if showOsmPolygons = false
+  // ─────────────────────────────────────────────────────────────
   function getMapPolygons() {
-    if (!selectedSubstation) return componentPolygons;
-    // If you do NOT want to see substation boundary at all, remove the line below
+    if (!selectedSubstation) return [];
     const boundaryPolygon: ComponentPolygon = {
       id: "substation_" + selectedSubstation.id,
       substation_id: selectedSubstation.id,
       label: "power_substation_polygon",
-      confirmed: true,
+      confirmed: false,
       geometry: selectedSubstation.geometry,
       created_at: selectedSubstation.created_at,
       substation_full_id: selectedSubstation.full_id,
+      from_osm: true,
     };
-    return [boundaryPolygon, ...componentPolygons];
+
+    const filtered = showOsmPolygons
+      ? componentPolygons
+      : componentPolygons.filter((p) => p.from_osm === false);
+
+    // Return boundary + filtered polygons
+    return [boundaryPolygon, ...filtered];
   }
 
-  // Summaries: total count + how many confirmed
+  // ─────────────────────────────────────────────────────────────
+  // 8. Summaries => remove "confirmed" column entirely
+  // ─────────────────────────────────────────────────────────────
   const labelTotals: Record<string, number> = {};
-  const labelConfirmed: Record<string, number> = {};
   componentPolygons.forEach((cp) => {
     if (!cp.label) return;
     labelTotals[cp.label] = (labelTotals[cp.label] || 0) + 1;
-    if (cp.confirmed) {
-      labelConfirmed[cp.label] = (labelConfirmed[cp.label] || 0) + 1;
+  });
+
+  const summaryRows = Object.keys(labelTotals)
+    .sort()
+    .map((lbl) => ({
+      lbl,
+      total: labelTotals[lbl],
+    }));
+
+  // ─────────────────────────────────────────────────────────────
+  // 9. Keyboard shortcut => press "o" to toggle OSM polygons
+  // ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      // Example: press "o" toggles showOsmPolygons
+      if (e.key === "o" || e.key === "O") {
+        setShowOsmPolygons((prev) => !prev);
+      }
     }
-  });
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
-  const summaryRows = Object.keys(labelTotals).sort().map((lbl) => {
-    const total = labelTotals[lbl];
-    const confirmed = labelConfirmed[lbl] || 0;
-    return { lbl, total, confirmed };
-  });
-
-  // Substation type dropdown highlight logic
+  // Substation type highlight logic
   const dropdownStyle: React.CSSProperties = {};
   if (substationTypeNeedsHighlight) {
     if (substationType === "") {
@@ -367,7 +410,7 @@ export default function AnnotateTab() {
 
   return (
     <div className="flex gap-4 mt-6">
-      {/* Sidebar: substation list */}
+      {/* Sidebar: list of substations */}
       <div className="w-64 flex flex-col">
         <div className="mb-4 font-semibold text-gray-800">
           {substations.length} Substations to annotate
@@ -396,6 +439,19 @@ export default function AnnotateTab() {
 
       {/* Main content: Map + annotation UI */}
       <div className="flex-1 flex flex-col relative">
+        {/* Toggle OSM data (UI) */}
+        <div className="absolute top-2 right-2 z-[500] bg-white bg-opacity-90 p-2 rounded shadow-md flex items-center gap-2">
+          <label htmlFor="toggle-osm" className="text-sm font-medium">
+            Show OSM Polygons (Shortcut "o")
+          </label>
+          <Switch
+            id="toggle-osm"
+            checked={showOsmPolygons}
+            onCheckedChange={setShowOsmPolygons}
+          />
+          {/* Also toggled by pressing "o" on the keyboard */}
+        </div>
+
         {selectedSubstation ? (
           <>
             <Card className="p-4 bg-white shadow-md flex-1 flex flex-col mb-4">
@@ -437,7 +493,7 @@ export default function AnnotateTab() {
                 />
               </div>
 
-              {/* Button => mark substation complete */}
+              {/* Mark substation complete */}
               <Button
                 onClick={handleCompleteSubstation}
                 className="bottom-4 right-4 bg-blue-300 text-black mt-4"
@@ -446,7 +502,7 @@ export default function AnnotateTab() {
               </Button>
             </Card>
 
-            {/* Summary of Components */}
+            {/* Summary of Components: remove Confirmed column */}
             <Card className="p-4 bg-white shadow-md mb-4">
               <h2 className="text-lg font-semibold mb-2">Component Summary</h2>
               {summaryRows.length === 0 ? (
@@ -457,15 +513,13 @@ export default function AnnotateTab() {
                     <tr className="bg-gray-50">
                       <th className="px-2 py-1 border-b text-left">Label</th>
                       <th className="px-2 py-1 border-b text-left">Total</th>
-                      <th className="px-2 py-1 border-b text-left">Confirmed</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {summaryRows.map(({ lbl, total, confirmed }) => (
+                    {summaryRows.map(({ lbl, total }) => (
                       <tr key={lbl}>
                         <td className="px-2 py-1 border-b">{lbl}</td>
                         <td className="px-2 py-1 border-b">{total}</td>
-                        <td className="px-2 py-1 border-b">{confirmed}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -480,14 +534,11 @@ export default function AnnotateTab() {
         )}
       </div>
 
-      {/* Dialog for labeling or confirming a polygon */}
+      {/* Dialog for labeling new polygons (user shapes) */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent
-          className="z-[9999] max-w-lg"
-          style={{ position: "absolute", cursor: "move" }}
-        >
+        <DialogContent className="z-[9999] max-w-lg" style={{ position: "absolute" }}>
           <DialogHeader>
-            <DialogTitle>Annotate / Confirm Component</DialogTitle>
+            <DialogTitle>Annotate Component</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 h-64 overflow-auto">
             {COMPONENT_OPTIONS.map((option) => {

@@ -4,6 +4,12 @@ import React, { useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 
+
+// Almost all standard web tile services use EPSG:3857 (Web Mercator).
+
+// Leaflet defaults to that same EPSG:3857 for display.
+
+// The actual GeoJSON coordinates that Leaflet collects are typically stored in [longitude, latitude] pairs (WGS84, effectively EPSG:4326).
 export default function DownloadTab() {
   const [downloading, setDownloading] = useState(false);
 
@@ -23,7 +29,8 @@ export default function DownloadTab() {
     let { data: annotations, error: annError } = await supabase
       .from("component_polygons")
       .select("*")
-      .in("substation_uuid", completeIds);
+      .in("substation_uuid", completeIds)
+      .eq("from_osm", false);
     if (annError) throw annError;
     if (!annotations) annotations = [];
     return { completeSubs, annotations };
