@@ -196,7 +196,7 @@ export default function CompleteTab() {
       substation_full_id: dialogPolygon.substation_full_id ?? selectedSubstation.full_id ?? null,
       label: finalLabel,
       geometry: dialogPolygon.geometry,
-      confirmed: false, // or true, whichever you prefer to store
+      confirmed: false, // or true again doesnt matter
       from_osm: false,
     };
 

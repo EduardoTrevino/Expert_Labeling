@@ -227,7 +227,7 @@ export default function MapLeaflet({
 
         {/* Render each feature */}
         {polygons.map((poly) => renderFeature(poly, onPolygonClicked))}
-
+        {/* change to allow market, line, rectangle, circle etc. */}
         <FeatureGroup>
           <EditControl
             position="topright"

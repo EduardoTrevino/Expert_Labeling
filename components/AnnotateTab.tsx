@@ -207,7 +207,7 @@ export default function AnnotateTab() {
       id: `temp-${Date.now()}`,
       substation_id: selectedSubstation.id,
       label: "",
-      confirmed: false, // not used anymore, but remains in DB
+      confirmed: false, // not used anymore, but remains in DB so its here lol
       geometry: geojson.geometry,
       created_at: new Date().toISOString(),
       substation_full_id: selectedSubstation.full_id || undefined,
@@ -258,7 +258,7 @@ export default function AnnotateTab() {
       substation_full_id: dialogPolygon.substation_full_id ?? selectedSubstation.full_id ?? null,
       label: finalLabel,
       geometry: dialogPolygon.geometry,
-      confirmed: false, // or true, whichever you prefer to store
+      confirmed: false, // or true, wdoesnt really matter we can store whatever
       from_osm: false,
     };
 
